@@ -1,0 +1,198 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: http-headers
+spec:
+  headers:
+    frameDeny: true
+    browserXssFilter: true
+    contentTypeNosniff: true
+    stsIncludeSubdomains: true
+    stsPreload: true
+    stsSeconds: 31536000
+    customRequestHeaders:
+      X-Forwarded-Proto: "https"
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: https-home-assistant
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`t90.boshuizen.dev`) && PathPrefix(`/ha/`)
+      services:
+        - name: home-assistant
+          port: 80
+      middlewares:
+        - name: http-headers
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: home-assistant-pvc
+  labels:
+    app: home-assistant
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 9Gi
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: home-assistant-configmap
+data:
+  configuration.yaml: |-
+    default_config:
+
+    logger:
+      default: info
+
+    http:
+      use_x_forwarded_for: true
+      trusted_proxies:
+        - 10.42.1.0/24
+
+    fontawesome:
+
+    frontend:
+      themes: !include_dir_merge_named themes
+
+    homeassistant:
+      media_dirs:
+        local: /config/media
+
+    powercalc:
+
+    # Text to speech
+    #tts:
+    #  - platform: google_translate
+    #    base_url: http://192.168.2.83:8123
+    #    service_name: google_say
+
+    group: !include groups.yaml
+    automation: !include automations.yaml
+    script: !include scripts.yaml
+    scene: !include scenes.yaml
+
+    sensor:
+      - platform: buienalarm
+        timeframe: 15
+        name: buienalarm
+        monitored_conditions:
+          - temperature
+          - precipitation
+          - precipitation_forecast_average
+          - precipitation_forecast_total
+          - next_rain_forecast
+
+    history:
+
+    influxdb:
+      api_version: 2
+      ssl: false
+      host: 192.168.2.250
+      port: 8086
+      token: hnrR4ZA_r3GPddOttdRpKlLT2aw8ZgQopqD1Nmhg4u0ZnacxFnwOLbti3JZi-2ChcUZKFSjLB8XmK3weYensQg==
+      organization: TL50
+      bucket: HA
+      tags:
+        source: HA
+      tags_attributes:
+        - friendly_name
+      default_measurement: units
+      exclude:
+        entities:
+          - zone.home
+        domains:
+          - persistent_notification
+          - person
+      include:
+        domains:
+          - sensor
+          - binary_sensor
+          - sun
+          - light
+          - media_player
+          - camera
+          - cover
+          - weather
+          - lock
+          - switch
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant
+spec:
+  selector:
+    app: home-assistant
+  type: ClusterIP
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8123
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-assistant
+  labels:
+    app: home-assistant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: home-assistant
+  template:
+    metadata:
+      labels:
+        app: home-assistant
+    spec:
+      containers:
+        - name: home-assistant
+          image: homeassistant/home-assistant:2024.2.1
+          resources:
+            requests:
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"
+          ports:
+            - containerPort: 8123
+          volumeMounts:
+            - mountPath: /config
+              name: config
+            - mountPath: /config/configuration.yaml
+              subPath: configuration.yaml
+              name: configmap-file
+            #- mountPath: /dev/ttyUSB1
+            #  name: zigbee
+          #securityContext:
+          #  privileged: true
+          #  capabilities:
+          #    add:
+          #      - NET_ADMIN
+          #      - NET_RAW
+          #      - SYS_ADMIN
+      #hostNetwork: true
+      volumes:
+        - name: config
+          persistentVolumeClaim:
+            claimName: home-assistant-pvc
+        - name: configmap-file
+          configMap:
+            name: home-assistant-configmap
+        #- name: zigbee
+        #  hostPath:
+        #   path: /dev/ttyACM0
+      #- name: cam
+      #  hostPath:
+      #    path: /dev/video0
